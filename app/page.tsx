@@ -12,10 +12,10 @@ interface FootprintData {
 }
 
 // Preload the model for better performance
-useGLTF.preload('/models/bennu_OLA_v20_PTM.glb');
+useGLTF.preload('/models/g_00880mm_alt_ptm_0000n00000_v020.glb');
 
 function BennuModel() {
-  const { scene } = useGLTF('/models/bennu_OLA_v20_PTM.glb');
+  const { scene } = useGLTF('/models/g_00880mm_alt_ptm_0000n00000_v020.glb');
   return <primitive object={scene} />;
 }
 
