@@ -88,6 +88,8 @@ interface WGC2ResultResponse {
   boundaryMeters?: number;
   data?: any;
   error?: string;
+  columns?: Array<{ name: string; type: string; units: string; outputID: string }>;
+  rows?: any[][];
 }
 
 /**
@@ -156,10 +158,41 @@ function parseVertices(resultData: WGC2ResultResponse): { x: number; y: number; 
       }
     }
   }
+  // Format 3: Tabular format with columns and rows (WGC2 standard format)
+  else if (resultData.columns && resultData.rows && Array.isArray(resultData.columns) && Array.isArray(resultData.rows)) {
+    // Find the indices of X, Y, Z columns by outputID
+    const xIndex = resultData.columns.findIndex(col => col.outputID === 'X');
+    const yIndex = resultData.columns.findIndex(col => col.outputID === 'Y');
+    const zIndex = resultData.columns.findIndex(col => col.outputID === 'Z');
+    
+    if (xIndex === -1 || yIndex === -1 || zIndex === -1) {
+      console.warn('Could not find X, Y, Z columns in result data. Available outputIDs:', 
+        resultData.columns.map(col => col.outputID));
+    } else {
+      // Extract X, Y, Z values from each row
+      for (const row of resultData.rows) {
+        if (Array.isArray(row) && row.length > Math.max(xIndex, yIndex, zIndex)) {
+          const x = typeof row[xIndex] === 'number' ? row[xIndex] : parseFloat(row[xIndex]);
+          const y = typeof row[yIndex] === 'number' ? row[yIndex] : parseFloat(row[yIndex]);
+          const z = typeof row[zIndex] === 'number' ? row[zIndex] : parseFloat(row[zIndex]);
+          
+          if (!isNaN(x) && !isNaN(y) && !isNaN(z)) {
+            vertices.push({
+              x: x * 1000, // Convert km to meters
+              y: y * 1000,
+              z: z * 1000,
+            });
+          } else {
+            console.warn('Invalid numeric values in row:', { x: row[xIndex], y: row[yIndex], z: row[zIndex] });
+          }
+        }
+      }
+    }
+  }
 
   if (vertices.length === 0) {
     throw new WGC2APIError(
-      'No valid vertices found in WGC2 result. Expected vertices or data array.',
+      'No valid vertices found in WGC2 result. Expected vertices, data array, or columns/rows format.',
       500,
       resultData
     );
