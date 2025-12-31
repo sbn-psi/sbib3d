@@ -11,6 +11,17 @@ interface FootprintData {
   boundaryMeters: number;
 }
 
+interface ErrorDetails {
+  message: string;
+  statusCode?: number;
+  details?: {
+    phase?: string;
+    error?: string;
+    errorDetails?: any;
+    fullResponse?: any;
+  };
+}
+
 // Preload the model for better performance
 useGLTF.preload('/models/g_00880mm_alt_ptm_0000n00000_v020.glb');
 
@@ -46,7 +57,13 @@ function FootprintMesh({ vertices }: { vertices: Vertex[] }) {
 /**
  * Formats error messages to be user-friendly
  */
-function formatErrorMessage(error: string, statusCode?: number): string {
+function formatErrorMessage(error: string, errorDetails?: ErrorDetails): string {
+  // Check if this is a calculation failure with specific error details
+  if (errorDetails?.details?.phase === 'FAILED' && errorDetails.details.error) {
+    // Return the actual calculation error message
+    return errorDetails.details.error;
+  }
+  
   // Network errors
   if (error.includes('Network error') || error.includes('fetch')) {
     return 'Unable to connect to the calculation service. Please check your internet connection and try again.';
@@ -57,22 +74,32 @@ function formatErrorMessage(error: string, statusCode?: number): string {
     return 'The calculation is taking longer than expected. Please try again in a moment.';
   }
   
+  // WGC2 calculation failures
+  if (error.includes('WGC2 calculation failed')) {
+    // Extract the error message after the colon if available
+    const errorMatch = error.match(/WGC2 calculation failed:\s*(.+)/);
+    if (errorMatch && errorMatch[1]) {
+      return errorMatch[1];
+    }
+    return 'The calculation failed. Please check the technical details for more information.';
+  }
+  
   // WGC2 service errors
   if (error.includes('WGC2') || error.includes('calculation')) {
-    if (statusCode === 502) {
+    if (errorDetails?.statusCode === 502) {
       return 'The calculation service is temporarily unavailable. Please try again later.';
     }
     return 'An error occurred during the calculation. Please try again.';
   }
   
   // HTTP status code based messages
-  if (statusCode === 502) {
+  if (errorDetails?.statusCode === 502) {
     return 'The calculation service is temporarily unavailable. Please try again later.';
   }
-  if (statusCode === 504) {
+  if (errorDetails?.statusCode === 504) {
     return 'The calculation timed out. Please try again.';
   }
-  if (statusCode === 500) {
+  if (errorDetails?.statusCode === 500) {
     return 'An internal error occurred. Please try again or contact support if the problem persists.';
   }
   
@@ -84,7 +111,7 @@ export default function Home() {
   const [footprintData, setFootprintData] = useState<FootprintData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [errorDetails, setErrorDetails] = useState<{ message: string; statusCode?: number } | null>(null);
+  const [errorDetails, setErrorDetails] = useState<ErrorDetails | null>(null);
 
   const fetchFootprint = async () => {
     try {
@@ -101,6 +128,7 @@ export default function Home() {
         setErrorDetails({
           message: errorData.error || `HTTP ${response.status}`,
           statusCode: errorData.statusCode || response.status,
+          details: errorData.details,
         });
         throw new Error(errorData.error || `HTTP ${response.status}`);
       }
@@ -170,7 +198,7 @@ export default function Home() {
             fontSize: '14px',
             lineHeight: '1.5',
           }}>
-            {formatErrorMessage(error, errorDetails?.statusCode)}
+            {formatErrorMessage(error, errorDetails || undefined)}
           </div>
           <button
             onClick={fetchFootprint}
@@ -208,11 +236,55 @@ export default function Home() {
                 fontSize: '11px',
                 wordBreak: 'break-word',
               }}>
-                {errorDetails.message}
+                <div style={{ marginBottom: '8px' }}>
+                  <strong>Error Message:</strong> {errorDetails.message}
+                </div>
                 {errorDetails.statusCode && (
-                  <div style={{ marginTop: '4px' }}>
-                    Status Code: {errorDetails.statusCode}
+                  <div style={{ marginBottom: '8px' }}>
+                    <strong>Status Code:</strong> {errorDetails.statusCode}
                   </div>
+                )}
+                {errorDetails.details?.phase && (
+                  <div style={{ marginBottom: '8px' }}>
+                    <strong>Calculation Phase:</strong> {errorDetails.details.phase}
+                  </div>
+                )}
+                {errorDetails.details?.error && (
+                  <div style={{ marginBottom: '8px' }}>
+                    <strong>Calculation Error:</strong> {errorDetails.details.error}
+                  </div>
+                )}
+                {errorDetails.details?.errorDetails && Object.keys(errorDetails.details.errorDetails).length > 0 && (
+                  <div style={{ marginTop: '8px' }}>
+                    <strong>Error Details:</strong>
+                    <pre style={{ 
+                      marginTop: '4px',
+                      padding: '4px',
+                      background: 'rgba(0, 0, 0, 0.3)',
+                      borderRadius: '2px',
+                      overflow: 'auto',
+                      maxHeight: '200px',
+                    }}>
+                      {JSON.stringify(errorDetails.details.errorDetails, null, 2)}
+                    </pre>
+                  </div>
+                )}
+                {errorDetails.details?.fullResponse && (
+                  <details style={{ marginTop: '8px' }}>
+                    <summary style={{ cursor: 'pointer', marginBottom: '4px' }}>
+                      Full API Response
+                    </summary>
+                    <pre style={{ 
+                      marginTop: '4px',
+                      padding: '4px',
+                      background: 'rgba(0, 0, 0, 0.3)',
+                      borderRadius: '2px',
+                      overflow: 'auto',
+                      maxHeight: '200px',
+                    }}>
+                      {JSON.stringify(errorDetails.details.fullResponse, null, 2)}
+                    </pre>
+                  </details>
                 )}
               </div>
             </details>

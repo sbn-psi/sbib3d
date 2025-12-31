@@ -26,20 +26,42 @@ interface WGC2DirectionVector {
  * Based on WGC2 API Standard Request Payload specification
  */
 interface WGC2CalculationRequest {
+  // Required fields - present in calculationRequest
   calculationType: string;
   kernels: WGC2KernelSet[];
   times: string[];
   timeSystem: string;
   timeFormat: string;
-  parameters: {
-    observer: string;
-    target: string;
-    referenceFrame: string;
-    aberrationCorrection: string;
-    direction?: string | WGC2DirectionVector;
-    coordinateRepresentation?: string;
-    [key: string]: any; // Allow additional calculation-specific parameters
-  };
+  observer: string;
+  target: string;
+  referenceFrame: string;
+  aberrationCorrection: string;
+  shape1: string;
+  targetFrame: string;
+  directionVectorType: string;
+  directionObject: string;
+  directionInstrument: string;
+  directionFrame: string;
+  directionFrameAxis: string;
+  vectorAbCorr: string;
+  azccwFlag: boolean;
+  elplszFlag: boolean;
+  antiVectorFlag: boolean;
+  stateRepresentation: string;
+  
+  // Optional fields - not currently used in calculationRequest
+  direction?: string | WGC2DirectionVector;
+  coordinateRepresentation?: string;
+  directionVectorX?: string;
+  directionVectorY?: string;
+  directionVectorZ?: string;
+  directionVectorRA?: string;
+  directionVectorDec?: string;
+  directionVectorAz?: string;
+  directionVectorEl?: string;
+  abberationCorrection?: string; // Note: typo in field name, kept for compatibility
+  
+  [key: string]: any; // Allow additional calculation-specific parameters
 }
 
 /**
@@ -207,26 +229,47 @@ export async function GET(request: NextRequest) {
     
     const calculationRequest: WGC2CalculationRequest = {
       calculationType: 'SURFACE_INTERCEPT_POINT',
-      kernels: [
-        { type: 'KERNEL_SET', id: 35 } // https://wgc2.jpl.nasa.gov:8443/webgeocalc/api/kernel-sets
-      ],
+    
+      // Ensure this kernel-set truly contains OSIRIS-REx SPK/CK/IK/FK/LSK and Bennu DSK
+      kernels: [{ type: 'KERNEL_SET', id: 35 }], // <-- verify ID on your WGC2 server
+    
       times: ['2019-09-21T21:01:12.885Z'],
       timeSystem: 'UTC',
       timeFormat: 'CALENDAR',
-      parameters: {
-        observer: '-64364', // OCAMS PolyCam NAIF ID
-        target: 'BENNU',
-        referenceFrame: 'IAU_BENNU',
-        aberrationCorrection: 'NONE',
-        direction: {
-          directionType: 'VECTOR',
-          directionVectorType: 'REFERENCE_FRAME_AXIS',
-          directionFrame: 'IAU_BENNU',
-          directionFrameAxis: 'Z', // Z-axis of the Bennu body-fixed frame
-        },
-        coordinateRepresentation: 'RECTANGULAR',
-      },
+    
+      // Spacecraft as the observer (name or NAIF ID -64)
+      observer: 'OSIRIS-REx',
+    
+      target: 'BENNU',
+    
+      // Reference/output frame in which the intercept point is returned
+      referenceFrame: 'IAU_BENNU',
+    
+      // Main aberration correction for the calc
+      aberrationCorrection: 'NONE',
+    
+      // Surface model: use DSK only if present in your kernel set; else 'ELLIPSOID'
+      shape1: 'DSK',
+      targetFrame: 'IAU_BENNU',
+    
+      // Direction specified by instrument frame axis (boresight)
+      directionVectorType: 'REFERENCE_FRAME_AXIS',
+      directionObject: 'INSTRUMENT',
+      directionInstrument: '-64364',       // PolyCam instrument NAIF ID from your label
+      directionFrame: 'ORX_OCAMS_POLYCAM', // Instrument frame from ORX frames kernel
+      directionFrameAxis: 'Z',            // Typical boresight axis; confirm in IK/FK
+    
+      // Aberration correction applied to the direction definition (distinct from main one)
+      vectorAbCorr: 'NONE',
+    
+      // Flags used for AZ/EL conventions or axis inversion
+      azccwFlag: false,
+      elplszFlag: false,
+      antiVectorFlag: false,
+
+      stateRepresentation: 'RECTANGULAR'
     };
+    
 
     console.log('[WGC2] Submitting calculation request:', {
       url: `${WGC2}/calculation/new`,
