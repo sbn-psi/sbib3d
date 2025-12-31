@@ -4,19 +4,14 @@ import { useEffect, useState, useMemo } from 'react';
 import { Canvas } from '@react-three/fiber';
 import { useGLTF, OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
-
-interface Vertex {
-  x: number;
-  y: number;
-  z: number;
-}
+import { createTriangulatedGeometry, type Vertex } from '@/lib/triangulation';
 
 interface FootprintData {
   vertices: Vertex[];
   boundaryMeters: number;
 }
 
-// Preload the model
+// Preload the model for better performance
 useGLTF.preload('/models/bennu_OLA_v20_PTM.glb');
 
 function BennuModel() {
@@ -24,35 +19,15 @@ function BennuModel() {
   return <primitive object={scene} />;
 }
 
+/**
+ * FootprintMesh Component
+ * 
+ * Renders a semi-transparent mesh overlay using the footprint vertices.
+ * Uses fan triangulation to create a polygon mesh from the vertex array.
+ */
 function FootprintMesh({ vertices }: { vertices: Vertex[] }) {
-  const geometry = useMemo(() => {
-    if (vertices.length === 0) return null;
-
-    const geo = new THREE.BufferGeometry();
-    
-    // Create positions array
-    const positions = new Float32Array(vertices.length * 3);
-    vertices.forEach((vertex, i) => {
-      positions[i * 3] = vertex.x;
-      positions[i * 3 + 1] = vertex.y;
-      positions[i * 3 + 2] = vertex.z;
-    });
-    
-    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-
-    // Create indices for a fan triangulation (assuming vertices form a polygon)
-    // Connect all vertices to the first vertex to form triangles
-    if (vertices.length >= 3) {
-      const indices: number[] = [];
-      for (let i = 1; i < vertices.length - 1; i++) {
-        indices.push(0, i, i + 1);
-      }
-      geo.setIndex(indices);
-    }
-
-    geo.computeVertexNormals();
-    return geo;
-  }, [vertices]);
+  // Memoize geometry creation to avoid recalculating on every render
+  const geometry = useMemo(() => createTriangulatedGeometry(vertices), [vertices]);
 
   if (!geometry) return null;
 
