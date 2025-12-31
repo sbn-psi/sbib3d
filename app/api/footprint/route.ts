@@ -31,13 +31,17 @@ interface WGC2CalculationRequest {
 }
 
 /**
- * WGC2 Status Response Interface
- * Response structure when polling for calculation status
+ * WGC2 Calculation Response Interface
+ * Response structure from calculation/new and status endpoints
  */
-interface WGC2StatusResponse {
-  status: 'PENDING' | 'COMPLETE' | 'FAILED';
-  jobId?: string;
+interface WGC2CalculationResponse {
+  status: string;
   message?: string;
+  calculationId?: string;
+  result?: {
+    phase?: string;
+    [key: string]: any;
+  };
   error?: string;
 }
 
@@ -258,7 +262,7 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    let initData: any;
+    let initData: WGC2CalculationResponse;
     try {
       const responseText = await initResponse.text();
       console.log('[WGC2] Initial response payload (raw):', responseText);
@@ -275,24 +279,47 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Extract job ID from response (WGC2 may use different field names)
-    const jobId = validateJobId(initData.jobId || initData.calculationId || initData.id);
-    console.log('[WGC2] Job ID extracted:', jobId);
+    // Check if the response indicates an error
+    if (initData.status !== 'OK' || initData.error) {
+      throw new WGC2APIError(
+        `WGC2 calculation request failed: ${initData.error || initData.message || 'Unknown error'}`,
+        502,
+        initData
+      );
+    }
 
-    // ========================================================================
-    // STEP 2: Poll for Calculation Completion
-    // ========================================================================
-    // WGC2 calculations are asynchronous. We must poll the status endpoint
-    // until the calculation completes. The status can be:
-    // - PENDING: Calculation is still in progress
-    // - COMPLETE: Calculation finished successfully
-    // - FAILED: Calculation encountered an error
-    
-    let status: string = 'PENDING';
-    let resultData: WGC2ResultResponse | null = null;
-    let pollAttempts = 0;
+    // Extract calculation ID from response
+    const jobId = validateJobId(initData.calculationId);
+    console.log('[WGC2] Calculation ID extracted:', jobId);
 
-    while (status !== 'COMPLETE' && pollAttempts < maxPollAttempts) {
+    // Initialize resultData variable (using any to handle flexible response structure)
+    let resultData: any = null;
+
+    // Check if the calculation is already complete in the initial response
+    // Some calculations may return results immediately
+    if (initData.result && initData.result.phase === 'COMPLETE') {
+      console.log('[WGC2] Calculation completed immediately in initial response');
+      resultData = initData.result;
+      // Skip polling and proceed to result processing
+    } else {
+      // Extract current phase from initial response
+      const initialPhase = initData.result?.phase || 'PENDING';
+      console.log('[WGC2] Initial calculation phase:', initialPhase);
+
+      // ========================================================================
+      // STEP 2: Poll for Calculation Completion
+      // ========================================================================
+      // WGC2 calculations are asynchronous. We must poll the status endpoint
+      // until the calculation completes. The calculation goes through phases:
+      // - LOADING_KERNELS: Loading required SPICE kernels
+      // - COMPUTING: Performing the calculation
+      // - COMPLETE: Calculation finished successfully
+      // - FAILED: Calculation encountered an error
+      
+      let phase: string = initialPhase;
+      let pollAttempts = 0;
+
+      while (phase !== 'COMPLETE' && pollAttempts < maxPollAttempts) {
       // Wait before polling (except on first attempt)
       if (pollAttempts > 0) {
         await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
@@ -335,7 +362,7 @@ export async function GET(request: NextRequest) {
         );
       }
 
-      let statusData: WGC2StatusResponse;
+      let statusData: WGC2CalculationResponse;
       try {
         const statusText = await statusResponse.text();
         console.log(`[WGC2] Status response payload (raw):`, statusText);
@@ -353,30 +380,52 @@ export async function GET(request: NextRequest) {
         );
       }
 
-      const previousStatus = status;
-      status = statusData.status;
+      // Check for errors in status response
+      if (statusData.status !== 'OK' || statusData.error) {
+        throw new WGC2APIError(
+          `WGC2 status check failed: ${statusData.error || statusData.message || 'Unknown error'}`,
+          502,
+          statusData
+        );
+      }
+
+      const previousPhase = phase;
+      // Extract phase from result object, default to PENDING if not present
+      phase = statusData.result?.phase || 'PENDING';
       
-      // Log status transition
-      if (previousStatus !== status) {
-        console.log(`[WGC2] Status transition: ${previousStatus} -> ${status}`, {
+      // Log phase transition
+      if (previousPhase !== phase) {
+        console.log(`[WGC2] Phase transition: ${previousPhase} -> ${phase}`, {
           attempt: pollAttempts + 1,
           statusData,
         });
       } else {
-        console.log(`[WGC2] Status unchanged: ${status}`, {
+        console.log(`[WGC2] Phase unchanged: ${phase}`, {
           attempt: pollAttempts + 1,
           statusData,
         });
       }
 
-      if (status === 'COMPLETE') {
+      if (phase === 'COMPLETE') {
         // ====================================================================
         // STEP 3: Fetch Calculation Results
         // ====================================================================
-        // Once the calculation is complete, retrieve the results containing
-        // the surface intercept vertices
+        // Once the calculation is complete, check if result is in status response
+        // or fetch from separate endpoint
         
-        console.log('[WGC2] Status is COMPLETE, fetching results...');
+        // Check if result data is already included in the status response
+        if (statusData.result && statusData.result.phase === 'COMPLETE') {
+          // Result may be included in status response
+          const resultKeys = Object.keys(statusData.result).filter(k => k !== 'phase');
+          if (resultKeys.length > 0) {
+            console.log('[WGC2] Result data included in status response');
+            resultData = statusData.result;
+            break;
+          }
+        }
+        
+        // If result not in status response, fetch from separate endpoint
+        console.log('[WGC2] Fetching result from separate endpoint...');
         
         let resultResponse: Response;
         try {
@@ -419,8 +468,11 @@ export async function GET(request: NextRequest) {
         try {
           const resultText = await resultResponse.text();
           console.log('[WGC2] Result response payload (raw):', resultText.substring(0, 1000)); // Log first 1000 chars
-          resultData = JSON.parse(resultText);
-          console.log('[WGC2] Result response payload (parsed):', JSON.stringify(resultData, null, 2));
+          const resultResponseData = JSON.parse(resultText);
+          console.log('[WGC2] Result response payload (parsed):', JSON.stringify(resultResponseData, null, 2));
+          
+          // Extract result from response (may be nested in result field)
+          resultData = resultResponseData.result || resultResponseData;
         } catch (parseError) {
           console.error('[WGC2] Failed to parse result response:', {
             error: parseError instanceof Error ? parseError.message : String(parseError),
@@ -449,13 +501,13 @@ export async function GET(request: NextRequest) {
             502
           );
         }
-
+        
         console.log('[WGC2] Successfully retrieved result data');
         break;
-      } else if (status === 'FAILED') {
-        const errorMessage = statusData.error || statusData.message || 'Unknown error';
-        console.error('[WGC2] Calculation failed with status:', {
-          status,
+      } else if (phase === 'FAILED') {
+        const errorMessage = statusData.error || statusData.message || statusData.result?.error || 'Unknown error';
+        console.error('[WGC2] Calculation failed with phase:', {
+          phase,
           errorMessage,
           fullStatusData: statusData,
         });
@@ -471,17 +523,18 @@ export async function GET(request: NextRequest) {
     }
 
     // Check if polling timed out
-    if (status !== 'COMPLETE' || !resultData) {
+    if (phase !== 'COMPLETE' || !resultData) {
       console.error('[WGC2] Polling timed out:', {
-        finalStatus: status,
+        finalPhase: phase,
         pollAttempts,
         maxPollAttempts,
       });
       throw new WGC2APIError(
-        `Calculation did not complete within ${maxPollAttempts} seconds. Last status: ${status}`,
+        `Calculation did not complete within ${maxPollAttempts} seconds. Last phase: ${phase}`,
         504
       );
     }
+    } // End of else block for non-immediate completion
 
     // ========================================================================
     // STEP 4: Process and Scale Vertices to Meters
@@ -491,7 +544,14 @@ export async function GET(request: NextRequest) {
     // 2. Scale from kilometers to meters (multiply by 1000)
     // 3. Calculate the boundary (perimeter) in meters
     
-    const vertices = parseVertices(resultData);
+    if (!resultData) {
+      throw new WGC2APIError(
+        'No result data available after calculation completion',
+        500
+      );
+    }
+    
+    const vertices = parseVertices(resultData as WGC2ResultResponse);
     const boundaryMeters = calculateBoundaryMeters(vertices);
 
     console.log('[WGC2] Processing complete:', {
