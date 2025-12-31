@@ -175,6 +175,11 @@ export async function GET(request: NextRequest) {
       aberrationCorrection: 'NONE',
     };
 
+    console.log('[WGC2] Submitting calculation request:', {
+      url: `${WGC2}/calculation/`,
+      request: calculationRequest,
+    });
+
     let initResponse: Response;
     try {
       initResponse = await fetch(`${WGC2}/calculation`, {
@@ -185,12 +190,22 @@ export async function GET(request: NextRequest) {
         body: JSON.stringify(calculationRequest),
       });
     } catch (fetchError) {
+      console.error('[WGC2] Network error submitting calculation request:', {
+        error: fetchError instanceof Error ? fetchError.message : String(fetchError),
+        stack: fetchError instanceof Error ? fetchError.stack : undefined,
+      });
       // Return 502 Bad Gateway for upstream service failures
       throw new WGC2APIError(
         `Network error while submitting calculation request: ${fetchError instanceof Error ? fetchError.message : 'Unknown network error'}`,
         502
       );
     }
+
+    console.log('[WGC2] Initial response status:', {
+      status: initResponse.status,
+      statusText: initResponse.statusText,
+      headers: Object.fromEntries(initResponse.headers.entries()),
+    });
 
     if (!initResponse.ok) {
       let errorText: string;
@@ -200,10 +215,11 @@ export async function GET(request: NextRequest) {
         errorText = `HTTP ${initResponse.status}: ${initResponse.statusText}`;
       }
       
-      console.error('WGC2 API submission error:', {
+      console.error('[WGC2] API submission error - response payload:', {
         status: initResponse.status,
         statusText: initResponse.statusText,
         body: errorText,
+        bodyLength: errorText.length,
       });
 
       // Return 502 Bad Gateway for upstream service failures (4xx/5xx from WGC2)
@@ -216,8 +232,14 @@ export async function GET(request: NextRequest) {
 
     let initData: any;
     try {
-      initData = await initResponse.json();
+      const responseText = await initResponse.text();
+      console.log('[WGC2] Initial response payload (raw):', responseText);
+      initData = JSON.parse(responseText);
+      console.log('[WGC2] Initial response payload (parsed):', JSON.stringify(initData, null, 2));
     } catch (parseError) {
+      console.error('[WGC2] Failed to parse initial response:', {
+        error: parseError instanceof Error ? parseError.message : String(parseError),
+      });
       // Return 502 for malformed upstream responses
       throw new WGC2APIError(
         'Failed to parse WGC2 calculation response. Invalid JSON received.',
@@ -227,6 +249,7 @@ export async function GET(request: NextRequest) {
 
     // Extract job ID from response (WGC2 may use different field names)
     const jobId = validateJobId(initData.jobId || initData.calculationId || initData.id);
+    console.log('[WGC2] Job ID extracted:', jobId);
 
     // ========================================================================
     // STEP 2: Poll for Calculation Completion
@@ -247,6 +270,8 @@ export async function GET(request: NextRequest) {
         await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
       }
 
+      console.log(`[WGC2] Polling status (attempt ${pollAttempts + 1}/${maxPollAttempts})...`);
+
       let statusResponse: Response;
       try {
         statusResponse = await fetch(`${WGC2}/calculation/${jobId}/status`, {
@@ -256,6 +281,10 @@ export async function GET(request: NextRequest) {
           },
         });
       } catch (fetchError) {
+        console.error('[WGC2] Network error checking status:', {
+          attempt: pollAttempts + 1,
+          error: fetchError instanceof Error ? fetchError.message : String(fetchError),
+        });
         // Return 502 Bad Gateway for upstream service failures
         throw new WGC2APIError(
           `Network error while checking calculation status: ${fetchError instanceof Error ? fetchError.message : 'Unknown network error'}`,
@@ -265,6 +294,12 @@ export async function GET(request: NextRequest) {
 
       if (!statusResponse.ok) {
         const errorText = await statusResponse.text().catch(() => statusResponse.statusText);
+        console.error('[WGC2] Status check error - response payload:', {
+          attempt: pollAttempts + 1,
+          status: statusResponse.status,
+          statusText: statusResponse.statusText,
+          body: errorText,
+        });
         // Return 502 Bad Gateway for upstream service failures
         throw new WGC2APIError(
           `Failed to fetch calculation status: ${statusResponse.statusText}. ${errorText}`,
@@ -274,8 +309,15 @@ export async function GET(request: NextRequest) {
 
       let statusData: WGC2StatusResponse;
       try {
-        statusData = await statusResponse.json();
+        const statusText = await statusResponse.text();
+        console.log(`[WGC2] Status response payload (raw):`, statusText);
+        statusData = JSON.parse(statusText);
+        console.log(`[WGC2] Status response payload (parsed):`, JSON.stringify(statusData, null, 2));
       } catch (parseError) {
+        console.error('[WGC2] Failed to parse status response:', {
+          attempt: pollAttempts + 1,
+          error: parseError instanceof Error ? parseError.message : String(parseError),
+        });
         // Return 502 for malformed upstream responses
         throw new WGC2APIError(
           'Failed to parse WGC2 status response. Invalid JSON received.',
@@ -283,7 +325,21 @@ export async function GET(request: NextRequest) {
         );
       }
 
+      const previousStatus = status;
       status = statusData.status;
+      
+      // Log status transition
+      if (previousStatus !== status) {
+        console.log(`[WGC2] Status transition: ${previousStatus} -> ${status}`, {
+          attempt: pollAttempts + 1,
+          statusData,
+        });
+      } else {
+        console.log(`[WGC2] Status unchanged: ${status}`, {
+          attempt: pollAttempts + 1,
+          statusData,
+        });
+      }
 
       if (status === 'COMPLETE') {
         // ====================================================================
@@ -291,6 +347,8 @@ export async function GET(request: NextRequest) {
         // ====================================================================
         // Once the calculation is complete, retrieve the results containing
         // the surface intercept vertices
+        
+        console.log('[WGC2] Status is COMPLETE, fetching results...');
         
         let resultResponse: Response;
         try {
@@ -301,6 +359,9 @@ export async function GET(request: NextRequest) {
             },
           });
         } catch (fetchError) {
+          console.error('[WGC2] Network error fetching result:', {
+            error: fetchError instanceof Error ? fetchError.message : String(fetchError),
+          });
           // Return 502 Bad Gateway for upstream service failures
           throw new WGC2APIError(
             `Network error while fetching calculation result: ${fetchError instanceof Error ? fetchError.message : 'Unknown network error'}`,
@@ -308,8 +369,18 @@ export async function GET(request: NextRequest) {
           );
         }
 
+        console.log('[WGC2] Result response status:', {
+          status: resultResponse.status,
+          statusText: resultResponse.statusText,
+        });
+
         if (!resultResponse.ok) {
           const errorText = await resultResponse.text().catch(() => resultResponse.statusText);
+          console.error('[WGC2] Result fetch error - response payload:', {
+            status: resultResponse.status,
+            statusText: resultResponse.statusText,
+            body: errorText,
+          });
           // Return 502 Bad Gateway for upstream service failures
           throw new WGC2APIError(
             `Failed to fetch calculation result: ${resultResponse.statusText}. ${errorText}`,
@@ -318,8 +389,14 @@ export async function GET(request: NextRequest) {
         }
 
         try {
-          resultData = await resultResponse.json();
+          const resultText = await resultResponse.text();
+          console.log('[WGC2] Result response payload (raw):', resultText.substring(0, 1000)); // Log first 1000 chars
+          resultData = JSON.parse(resultText);
+          console.log('[WGC2] Result response payload (parsed):', JSON.stringify(resultData, null, 2));
         } catch (parseError) {
+          console.error('[WGC2] Failed to parse result response:', {
+            error: parseError instanceof Error ? parseError.message : String(parseError),
+          });
           // Return 502 for malformed upstream responses
           throw new WGC2APIError(
             'Failed to parse WGC2 result response. Invalid JSON received.',
@@ -328,7 +405,8 @@ export async function GET(request: NextRequest) {
         }
 
         // Check if result contains an error message
-        if (resultData.error) {
+        if (resultData && resultData.error) {
+          console.error('[WGC2] Result contains error:', resultData.error);
           // Return 502 for upstream calculation errors
           throw new WGC2APIError(
             `WGC2 calculation returned an error: ${resultData.error}`,
@@ -337,9 +415,22 @@ export async function GET(request: NextRequest) {
           );
         }
 
+        if (!resultData) {
+          throw new WGC2APIError(
+            'WGC2 returned null result data',
+            502
+          );
+        }
+
+        console.log('[WGC2] Successfully retrieved result data');
         break;
       } else if (status === 'FAILED') {
         const errorMessage = statusData.error || statusData.message || 'Unknown error';
+        console.error('[WGC2] Calculation failed with status:', {
+          status,
+          errorMessage,
+          fullStatusData: statusData,
+        });
         // Return 502 for upstream calculation failures
         throw new WGC2APIError(
           `WGC2 calculation failed: ${errorMessage}`,
@@ -353,6 +444,11 @@ export async function GET(request: NextRequest) {
 
     // Check if polling timed out
     if (status !== 'COMPLETE' || !resultData) {
+      console.error('[WGC2] Polling timed out:', {
+        finalStatus: status,
+        pollAttempts,
+        maxPollAttempts,
+      });
       throw new WGC2APIError(
         `Calculation did not complete within ${maxPollAttempts} seconds. Last status: ${status}`,
         504
@@ -370,8 +466,17 @@ export async function GET(request: NextRequest) {
     const vertices = parseVertices(resultData);
     const boundaryMeters = calculateBoundaryMeters(vertices);
 
+    console.log('[WGC2] Processing complete:', {
+      vertexCount: vertices.length,
+      boundaryMeters,
+    });
+
     // Validate that we have sufficient vertices
     if (vertices.length < 3) {
+      console.error('[WGC2] Insufficient vertices:', {
+        vertexCount: vertices.length,
+        resultData,
+      });
       throw new WGC2APIError(
         `Insufficient vertices returned: ${vertices.length}. Expected at least 3 for a valid polygon.`,
         500,
@@ -384,16 +489,18 @@ export async function GET(request: NextRequest) {
     // ========================================================================
     // Return the processed vertices and boundary as JSON
     
+    console.log('[WGC2] Returning successful response');
     return NextResponse.json({
       vertices,
       boundaryMeters,
     });
   } catch (error) {
     // Enhanced error handling with detailed logging
-    console.error('Error in footprint API route:', {
+    console.error('[WGC2] Error in footprint API route:', {
       error: error instanceof Error ? error.message : String(error),
       stack: error instanceof Error ? error.stack : undefined,
       apiResponse: error instanceof WGC2APIError ? error.apiResponse : undefined,
+      statusCode: error instanceof WGC2APIError ? error.statusCode : undefined,
     });
 
     // Return appropriate error response
@@ -402,6 +509,7 @@ export async function GET(request: NextRequest) {
         {
           error: error.message,
           statusCode: error.statusCode,
+          details: error.apiResponse,
         },
         { status: error.statusCode }
       );
