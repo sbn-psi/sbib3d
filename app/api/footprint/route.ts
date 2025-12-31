@@ -1,17 +1,33 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 /**
- * WGC2 API Request Interface
+ * WGC2 Kernel Set Interface
+ * Defines the structure for kernel set references
+ */
+interface WGC2KernelSet {
+  type: 'KERNEL_SET';
+  id: number;
+}
+
+/**
+ * WGC2 API Standard Request Payload Interface
  * Defines the structure for submitting a calculation request to WebGeocalc
+ * Based on WGC2 API Standard Request Payload specification
  */
 interface WGC2CalculationRequest {
   calculationType: string;
-  kernels?: string[];
+  kernels: WGC2KernelSet[];
   times: string[];
-  observer: string;
-  target: string;
-  referenceFrame?: string;
-  aberrationCorrection?: string;
+  timeSystem: string;
+  timeFormat: string;
+  parameters: {
+    observer: string;
+    target: string;
+    referenceFrame: string;
+    aberrationCorrection: string;
+    direction?: string;
+    [key: string]: any; // Allow additional calculation-specific parameters
+  };
 }
 
 /**
@@ -138,7 +154,8 @@ function calculateBoundaryMeters(vertices: { x: number; y: number; z: number }[]
  * API Route Handler for OCAMS PolyCam FOV Surface Intercepts
  * 
  * This route interacts with the WebGeocalc (WGC2) REST API to compute field of view
- * surface intercepts on asteroid Bennu. The process involves:
+ * surface intercepts on asteroid Bennu using SURFACE_INTERCEPT_POINT calculation type.
+ * The process involves:
  * 1. Submitting a calculation request
  * 2. Polling for completion status
  * 3. Retrieving results
@@ -158,31 +175,42 @@ export async function GET(request: NextRequest) {
     // STEP 1: Submit Calculation Request
     // ========================================================================
     // Prepare the calculation request for OCAMS PolyCam FOV surface intercepts.
-    // This request specifies:
-    // - Calculation type: FOV surface intercept
-    // - Observer: OCAMS PolyCam instrument (NAIF ID -64364)
-    // - Target: Bennu asteroid
-    // - Time: UTC timestamp 2019-09-21T21:01:12.885Z
-    // - Reference frame: IAU_BENNU (Bennu body-fixed frame)
-    // - Aberration correction: NONE (no light-time or stellar aberration)
+    // Uses WGC2 Standard Request Payload format with:
+    // - Calculation type: SURFACE_INTERCEPT_POINT (determines where a vector intersects the surface)
+    // - Kernels: Kernel set ID (may need to be adjusted based on available kernel sets)
+    // - Times: UTC timestamp 2019-09-21T21:01:12.885Z
+    // - Time system: UTC
+    // - Time format: CALENDAR
+    // - Parameters:
+    //   - Observer: OCAMS PolyCam instrument (NAIF ID -64364)
+    //   - Target: Bennu asteroid
+    //   - Reference frame: IAU_BENNU (Bennu body-fixed frame)
+    //   - Aberration correction: NONE (no light-time or stellar aberration)
     
     const calculationRequest: WGC2CalculationRequest = {
-      calculationType: 'FOV_SURFACE_INTERCEPT',
+      calculationType: 'SURFACE_INTERCEPT_POINT',
+      kernels: [
+        { type: 'KERNEL_SET', id: 35 } // https://wgc2.jpl.nasa.gov:8443/webgeocalc/api/kernel-sets
+      ],
       times: ['2019-09-21T21:01:12.885Z'],
-      observer: '-64364', // OCAMS PolyCam NAIF ID
-      target: 'BENNU',
-      referenceFrame: 'IAU_BENNU',
-      aberrationCorrection: 'NONE',
+      timeSystem: 'UTC',
+      timeFormat: 'CALENDAR',
+      parameters: {
+        observer: '-64364', // OCAMS PolyCam NAIF ID
+        target: 'BENNU',
+        referenceFrame: 'IAU_BENNU',
+        aberrationCorrection: 'NONE',
+      },
     };
 
     console.log('[WGC2] Submitting calculation request:', {
-      url: `${WGC2}/calculation/`,
+      url: `${WGC2}/calculation/new`,
       request: calculationRequest,
     });
 
     let initResponse: Response;
     try {
-      initResponse = await fetch(`${WGC2}/calculation`, {
+      initResponse = await fetch(`${WGC2}/calculation/new`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
