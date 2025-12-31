@@ -10,6 +10,17 @@ interface WGC2KernelSet {
 }
 
 /**
+ * WGC2 Direction Vector Interface
+ * Defines the structure for direction parameter in SURFACE_INTERCEPT_POINT calculations
+ */
+interface WGC2DirectionVector {
+  directionType: 'VECTOR';
+  directionVectorType: string;
+  directionFrame: string;
+  directionFrameAxis: string;
+}
+
+/**
  * WGC2 API Standard Request Payload Interface
  * Defines the structure for submitting a calculation request to WebGeocalc
  * Based on WGC2 API Standard Request Payload specification
@@ -25,7 +36,8 @@ interface WGC2CalculationRequest {
     target: string;
     referenceFrame: string;
     aberrationCorrection: string;
-    direction?: string;
+    direction?: string | WGC2DirectionVector;
+    coordinateRepresentation?: string;
     [key: string]: any; // Allow additional calculation-specific parameters
   };
 }
@@ -190,6 +202,8 @@ export async function GET(request: NextRequest) {
     //   - Target: Bennu asteroid
     //   - Reference frame: IAU_BENNU (Bennu body-fixed frame)
     //   - Aberration correction: NONE (no light-time or stellar aberration)
+    //   - Direction: Vector direction using reference frame axis (Z-axis of IAU_BENNU frame)
+    //   - Coordinate representation: RECTANGULAR (Cartesian coordinates)
     
     const calculationRequest: WGC2CalculationRequest = {
       calculationType: 'SURFACE_INTERCEPT_POINT',
@@ -204,6 +218,13 @@ export async function GET(request: NextRequest) {
         target: 'BENNU',
         referenceFrame: 'IAU_BENNU',
         aberrationCorrection: 'NONE',
+        direction: {
+          directionType: 'VECTOR',
+          directionVectorType: 'REFERENCE_FRAME_AXIS',
+          directionFrame: 'IAU_BENNU',
+          directionFrameAxis: 'Z', // Z-axis of the Bennu body-fixed frame
+        },
+        coordinateRepresentation: 'RECTANGULAR',
       },
     };
 
@@ -385,23 +406,82 @@ export async function GET(request: NextRequest) {
       console.log('[WGC2] Successfully retrieved result data from /results endpoint (immediate)');
       // Skip polling and proceed to result processing
     } else if (initialPhase === 'FAILED') {
-      // Handle immediate failure
-      const errorMessage = initData.error || initData.message || initData.result?.error || 'Unknown error';
-      const errorDetails = initData.result?.errorDetails || initData.result || {};
+      // When phase is FAILED, fetch the error details from /results endpoint
+      console.log('[WGC2] Calculation failed immediately, fetching error details from /results endpoint...');
+      
+      const resultsUrl = `${WGC2}/calculation/${jobId}/results`;
+      console.log('[WGC2] Results request details (FAILED, immediate):', {
+        resultsUrl: resultsUrl,
+        jobId: jobId,
+        method: 'GET',
+      });
+      
+      let resultResponse: Response;
+      try {
+        resultResponse = await fetch(resultsUrl, {
+          method: 'GET',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+        });
+      } catch (fetchError) {
+        console.error('[WGC2] Network error fetching results (FAILED, immediate):', {
+          resultsUrl: resultsUrl,
+          jobId: jobId,
+          error: fetchError instanceof Error ? fetchError.message : String(fetchError),
+        });
+        throw new WGC2APIError(
+          `Network error while fetching calculation results: ${fetchError instanceof Error ? fetchError.message : 'Unknown network error'}`,
+          502
+        );
+      }
+
+      if (!resultResponse.ok) {
+        const errorText = await resultResponse.text().catch(() => resultResponse.statusText);
+        console.error('[WGC2] Results fetch error (FAILED, immediate):', {
+          status: resultResponse.status,
+          statusText: resultResponse.statusText,
+          requestUrl: resultsUrl,
+          body: errorText,
+        });
+        throw new WGC2APIError(
+          `Failed to fetch calculation results: ${resultResponse.statusText}. ${errorText}`,
+          502
+        );
+      }
+
+      let failedResultData: any;
+      try {
+        const resultText = await resultResponse.text();
+        console.log('[WGC2] Results response payload (raw, FAILED, immediate):', resultText);
+        failedResultData = JSON.parse(resultText);
+        console.log('[WGC2] Results response payload (parsed, FAILED, immediate):', JSON.stringify(failedResultData, null, 2));
+      } catch (parseError) {
+        console.error('[WGC2] Failed to parse results response (FAILED, immediate):', {
+          error: parseError instanceof Error ? parseError.message : String(parseError),
+        });
+        throw new WGC2APIError(
+          'Failed to parse WGC2 results response. Invalid JSON received.',
+          502
+        );
+      }
+
+      // Extract error information from the results response
+      const errorMessage = failedResultData.error || failedResultData.message || 'Unknown error';
       console.error('[WGC2] Calculation failed immediately with phase FAILED:', {
         phase: initialPhase,
         errorMessage,
-        errorDetails,
-        fullInitData: initData,
+        fullResultData: failedResultData,
       });
+      
       throw new WGC2APIError(
         `WGC2 calculation failed: ${errorMessage}`,
         502,
         {
           phase: 'FAILED',
           error: errorMessage,
-          errorDetails: errorDetails,
-          fullResponse: initData,
+          errorDetails: failedResultData,
+          fullResponse: failedResultData,
         }
       );
     } else {
@@ -417,7 +497,7 @@ export async function GET(request: NextRequest) {
       // - FAILED: Calculation encountered an error (returns error response with details)
       //
       // Endpoints:
-      // - Status: {WGC2}/calculation/{calculationId}/status
+      // - Status: {WGC2}/calculation/{calculationId} (GET request to check status)
       // - Results: {WGC2}/calculation/{calculationId}/results (only when phase is COMPLETE)
       // Note: After fetching results, the calculation status phase is set to DISPATCHED
       
@@ -708,27 +788,120 @@ export async function GET(request: NextRequest) {
         console.log('[WGC2] Successfully retrieved result data from /results endpoint');
         break;
       } else if (phase === 'FAILED') {
-        // When phase is FAILED, the status response contains error information
-        // Extract all available error details from the response
-        const errorMessage = statusData.error || statusData.message || statusData.result?.error || 'Unknown error';
-        const errorDetails = statusData.result?.errorDetails || statusData.result || {};
+        // When phase is FAILED, fetch the error details from /results endpoint
+        console.log('[WGC2] Calculation phase is FAILED, fetching error details from /results endpoint...');
         
+        const resultsUrl = `${WGC2}/calculation/${jobId}/results`;
+        console.log('[WGC2] Results request details (FAILED):', {
+          resultsUrl: resultsUrl,
+          jobId: jobId,
+          method: 'GET',
+        });
+        
+        let resultResponse: Response;
+        try {
+          resultResponse = await fetch(resultsUrl, {
+            method: 'GET',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+          });
+        } catch (fetchError) {
+          console.error('[WGC2] Network error fetching results (FAILED):', {
+            resultsUrl: resultsUrl,
+            jobId: jobId,
+            error: fetchError instanceof Error ? fetchError.message : String(fetchError),
+            stack: fetchError instanceof Error ? fetchError.stack : undefined,
+          });
+          throw new WGC2APIError(
+            `Network error while fetching calculation results: ${fetchError instanceof Error ? fetchError.message : 'Unknown network error'}`,
+            502
+          );
+        }
+
+        console.log('[WGC2] Results response received (FAILED):', {
+          status: resultResponse.status,
+          statusText: resultResponse.statusText,
+          headers: Object.fromEntries(resultResponse.headers.entries()),
+          url: resultResponse.url,
+        });
+
+        if (!resultResponse.ok) {
+          const errorText = await resultResponse.text().catch(() => resultResponse.statusText);
+          console.error('[WGC2] Results fetch error (FAILED) - detailed diagnostics:', {
+            status: resultResponse.status,
+            statusText: resultResponse.statusText,
+            requestUrl: resultsUrl,
+            responseUrl: resultResponse.url,
+            jobId: jobId,
+            body: errorText,
+            bodyLength: errorText?.length,
+            headers: Object.fromEntries(resultResponse.headers.entries()),
+          });
+          
+          // Special handling for 404 errors
+          if (resultResponse.status === 404) {
+            throw new WGC2APIError(
+              `Calculation results endpoint not found (404). This may indicate the results are no longer available or the endpoint is incorrect. ` +
+              `Requested URL: ${resultsUrl}, JobId: ${jobId}, Base URL: ${WGC2}. ` +
+              `Response: ${errorText || resultResponse.statusText}`,
+              404,
+              {
+                requestUrl: resultsUrl,
+                jobId: jobId,
+                baseUrl: WGC2,
+                responseBody: errorText,
+              }
+            );
+          }
+          
+          throw new WGC2APIError(
+            `Failed to fetch calculation results: ${resultResponse.statusText} (${resultResponse.status}). ` +
+            `Requested URL: ${resultsUrl}. Response: ${errorText}`,
+            502,
+            {
+              status: resultResponse.status,
+              statusText: resultResponse.statusText,
+              requestUrl: resultsUrl,
+              responseBody: errorText,
+            }
+          );
+        }
+
+        let failedResultData: any;
+        try {
+          const resultText = await resultResponse.text();
+          console.log('[WGC2] Results response payload (raw, FAILED):', resultText);
+          failedResultData = JSON.parse(resultText);
+          console.log('[WGC2] Results response payload (parsed, FAILED):', JSON.stringify(failedResultData, null, 2));
+        } catch (parseError) {
+          console.error('[WGC2] Failed to parse results response (FAILED):', {
+            error: parseError instanceof Error ? parseError.message : String(parseError),
+            resultsUrl: resultsUrl,
+          });
+          throw new WGC2APIError(
+            'Failed to parse WGC2 results response. Invalid JSON received.',
+            502
+          );
+        }
+
+        // Extract error information from the results response
+        const errorMessage = failedResultData.error || failedResultData.message || 'Unknown error';
         console.error('[WGC2] Calculation failed with phase FAILED:', {
           phase,
           errorMessage,
-          errorDetails,
-          fullStatusData: statusData,
+          fullResultData: failedResultData,
         });
         
-        // Return 502 for upstream calculation failures with detailed error information
+        // Return 502 for upstream calculation failures with error information from /results endpoint
         throw new WGC2APIError(
           `WGC2 calculation failed: ${errorMessage}`,
           502,
           {
             phase: 'FAILED',
             error: errorMessage,
-            errorDetails: errorDetails,
-            fullResponse: statusData,
+            errorDetails: failedResultData,
+            fullResponse: failedResultData,
           }
         );
       }
