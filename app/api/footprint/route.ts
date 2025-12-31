@@ -148,7 +148,8 @@ function calculateBoundaryMeters(vertices: { x: number; y: number; z: number }[]
  * @returns JSON response with vertices and boundaryMeters
  */
 export async function GET(request: NextRequest) {
-  const wgc2BaseUrl = 'https://wgc2.jpl.nasa.gov:8443/webgeocalc/api';
+  // Read WGC2 API URL from environment variable, fallback to default JPL endpoint
+  const WGC2 = process.env.WGC_URL ?? 'https://wgc2.jpl.nasa.gov:8443/webgeocalc/api';
   const maxPollAttempts = 60; // Maximum 60 attempts (60 seconds total)
   const pollIntervalMs = 1000; // Wait 1 second between polls
 
@@ -176,7 +177,7 @@ export async function GET(request: NextRequest) {
 
     let initResponse: Response;
     try {
-      initResponse = await fetch(`${wgc2BaseUrl}/calculation`, {
+      initResponse = await fetch(`${WGC2}/calculation`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -184,9 +185,10 @@ export async function GET(request: NextRequest) {
         body: JSON.stringify(calculationRequest),
       });
     } catch (fetchError) {
+      // Return 502 Bad Gateway for upstream service failures
       throw new WGC2APIError(
         `Network error while submitting calculation request: ${fetchError instanceof Error ? fetchError.message : 'Unknown network error'}`,
-        503
+        502
       );
     }
 
@@ -204,9 +206,10 @@ export async function GET(request: NextRequest) {
         body: errorText,
       });
 
+      // Return 502 Bad Gateway for upstream service failures (4xx/5xx from WGC2)
       throw new WGC2APIError(
         `Failed to initiate WGC2 calculation: ${initResponse.statusText}. ${errorText}`,
-        initResponse.status || 500,
+        502,
         { statusText: initResponse.statusText, body: errorText }
       );
     }
@@ -215,9 +218,10 @@ export async function GET(request: NextRequest) {
     try {
       initData = await initResponse.json();
     } catch (parseError) {
+      // Return 502 for malformed upstream responses
       throw new WGC2APIError(
         'Failed to parse WGC2 calculation response. Invalid JSON received.',
-        500
+        502
       );
     }
 
@@ -245,24 +249,26 @@ export async function GET(request: NextRequest) {
 
       let statusResponse: Response;
       try {
-        statusResponse = await fetch(`${wgc2BaseUrl}/calculation/${jobId}/status`, {
+        statusResponse = await fetch(`${WGC2}/calculation/${jobId}/status`, {
           method: 'GET',
           headers: {
             'Content-Type': 'application/json',
           },
         });
       } catch (fetchError) {
+        // Return 502 Bad Gateway for upstream service failures
         throw new WGC2APIError(
           `Network error while checking calculation status: ${fetchError instanceof Error ? fetchError.message : 'Unknown network error'}`,
-          503
+          502
         );
       }
 
       if (!statusResponse.ok) {
         const errorText = await statusResponse.text().catch(() => statusResponse.statusText);
+        // Return 502 Bad Gateway for upstream service failures
         throw new WGC2APIError(
           `Failed to fetch calculation status: ${statusResponse.statusText}. ${errorText}`,
-          statusResponse.status || 500
+          502
         );
       }
 
@@ -270,9 +276,10 @@ export async function GET(request: NextRequest) {
       try {
         statusData = await statusResponse.json();
       } catch (parseError) {
+        // Return 502 for malformed upstream responses
         throw new WGC2APIError(
           'Failed to parse WGC2 status response. Invalid JSON received.',
-          500
+          502
         );
       }
 
@@ -287,41 +294,45 @@ export async function GET(request: NextRequest) {
         
         let resultResponse: Response;
         try {
-          resultResponse = await fetch(`${wgc2BaseUrl}/calculation/${jobId}/result`, {
+          resultResponse = await fetch(`${WGC2}/calculation/${jobId}/result`, {
             method: 'GET',
             headers: {
               'Content-Type': 'application/json',
             },
           });
         } catch (fetchError) {
+          // Return 502 Bad Gateway for upstream service failures
           throw new WGC2APIError(
             `Network error while fetching calculation result: ${fetchError instanceof Error ? fetchError.message : 'Unknown network error'}`,
-            503
+            502
           );
         }
 
         if (!resultResponse.ok) {
           const errorText = await resultResponse.text().catch(() => resultResponse.statusText);
+          // Return 502 Bad Gateway for upstream service failures
           throw new WGC2APIError(
             `Failed to fetch calculation result: ${resultResponse.statusText}. ${errorText}`,
-            resultResponse.status || 500
+            502
           );
         }
 
         try {
           resultData = await resultResponse.json();
         } catch (parseError) {
+          // Return 502 for malformed upstream responses
           throw new WGC2APIError(
             'Failed to parse WGC2 result response. Invalid JSON received.',
-            500
+            502
           );
         }
 
         // Check if result contains an error message
         if (resultData.error) {
+          // Return 502 for upstream calculation errors
           throw new WGC2APIError(
             `WGC2 calculation returned an error: ${resultData.error}`,
-            500,
+            502,
             resultData
           );
         }
@@ -329,9 +340,10 @@ export async function GET(request: NextRequest) {
         break;
       } else if (status === 'FAILED') {
         const errorMessage = statusData.error || statusData.message || 'Unknown error';
+        // Return 502 for upstream calculation failures
         throw new WGC2APIError(
           `WGC2 calculation failed: ${errorMessage}`,
-          500,
+          502,
           statusData
         );
       }
