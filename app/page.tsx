@@ -1,65 +1,154 @@
-import Image from "next/image";
+'use client';
+
+import { useEffect, useState, useMemo } from 'react';
+import { Canvas } from '@react-three/fiber';
+import { useGLTF, OrbitControls } from '@react-three/drei';
+import * as THREE from 'three';
+
+interface Vertex {
+  x: number;
+  y: number;
+  z: number;
+}
+
+interface FootprintData {
+  vertices: Vertex[];
+  boundaryMeters: number;
+}
+
+// Preload the model
+useGLTF.preload('/models/bennu_OLA_v20_PTM.glb');
+
+function BennuModel() {
+  const { scene } = useGLTF('/models/bennu_OLA_v20_PTM.glb');
+  return <primitive object={scene} />;
+}
+
+function FootprintMesh({ vertices }: { vertices: Vertex[] }) {
+  const geometry = useMemo(() => {
+    if (vertices.length === 0) return null;
+
+    const geo = new THREE.BufferGeometry();
+    
+    // Create positions array
+    const positions = new Float32Array(vertices.length * 3);
+    vertices.forEach((vertex, i) => {
+      positions[i * 3] = vertex.x;
+      positions[i * 3 + 1] = vertex.y;
+      positions[i * 3 + 2] = vertex.z;
+    });
+    
+    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+
+    // Create indices for a fan triangulation (assuming vertices form a polygon)
+    // Connect all vertices to the first vertex to form triangles
+    if (vertices.length >= 3) {
+      const indices: number[] = [];
+      for (let i = 1; i < vertices.length - 1; i++) {
+        indices.push(0, i, i + 1);
+      }
+      geo.setIndex(indices);
+    }
+
+    geo.computeVertexNormals();
+    return geo;
+  }, [vertices]);
+
+  if (!geometry) return null;
+
+  return (
+    <mesh geometry={geometry}>
+      <meshBasicMaterial
+        color="#ff0000"
+        transparent
+        opacity={0.5}
+        side={THREE.DoubleSide}
+      />
+    </mesh>
+  );
+}
 
 export default function Home() {
+  const [footprintData, setFootprintData] = useState<FootprintData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    async function fetchFootprint() {
+      try {
+        setLoading(true);
+        setError(null);
+        const response = await fetch('/api/footprint');
+        
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+          throw new Error(errorData.error || `HTTP ${response.status}`);
+        }
+
+        const data: FootprintData = await response.json();
+        setFootprintData(data);
+      } catch (err) {
+        console.error('Failed to fetch footprint data:', err);
+        setError(err instanceof Error ? err.message : 'Failed to fetch footprint data');
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    fetchFootprint();
+  }, []);
+
   return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex min-h-screen w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+    <div style={{ width: '100vw', height: '100vh' }}>
+      <Canvas camera={{ position: [0, 0, 500], fov: 50 }}>
+        <ambientLight intensity={0.5} />
+        <pointLight position={[10, 10, 10]} intensity={1} />
+        <directionalLight position={[5, 5, 5]} intensity={0.5} />
+        <BennuModel />
+        {footprintData && footprintData.vertices.length > 0 && (
+          <FootprintMesh vertices={footprintData.vertices} />
+        )}
+        <OrbitControls enableDamping dampingFactor={0.05} />
+      </Canvas>
+      {loading && (
+        <div style={{
+          position: 'absolute',
+          top: '20px',
+          left: '20px',
+          padding: '10px 20px',
+          background: 'rgba(0, 0, 0, 0.7)',
+          color: 'white',
+          borderRadius: '4px',
+        }}>
+          Loading footprint data...
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+      )}
+      {error && (
+        <div style={{
+          position: 'absolute',
+          top: '20px',
+          left: '20px',
+          padding: '10px 20px',
+          background: 'rgba(255, 0, 0, 0.7)',
+          color: 'white',
+          borderRadius: '4px',
+        }}>
+          Error: {error}
         </div>
-      </main>
+      )}
+      {footprintData && !loading && (
+        <div style={{
+          position: 'absolute',
+          bottom: '20px',
+          left: '20px',
+          padding: '10px 20px',
+          background: 'rgba(0, 0, 0, 0.7)',
+          color: 'white',
+          borderRadius: '4px',
+        }}>
+          Boundary: {footprintData.boundaryMeters.toFixed(2)} m
+        </div>
+      )}
     </div>
   );
 }
