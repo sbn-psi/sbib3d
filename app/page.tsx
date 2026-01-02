@@ -4,11 +4,14 @@ import { useEffect, useState, useMemo } from 'react';
 import { Canvas } from '@react-three/fiber';
 import { useGLTF, OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
-import { createTriangulatedGeometry, type Vertex } from '@/lib/triangulation';
 
 interface FootprintData {
-  vertices: Vertex[];
-  boundaryMeters: number;
+  boundaryMeters: number[];
+  trianglesMeters: number[];
+  count: {
+    boundary: number;
+    triangles: number;
+  };
 }
 
 interface ErrorDetails {
@@ -31,26 +34,48 @@ function BennuModel() {
 }
 
 /**
- * FootprintMesh Component
+ * FootprintPolygon Component
  * 
- * Renders a semi-transparent mesh overlay using the footprint vertices.
- * Uses fan triangulation to create a polygon mesh from the vertex array.
+ * Renders a semi-transparent polygon mesh overlay using the triangulated footprint data.
+ * @param triangles - Float32Array of interleaved XYZ coordinates (in meters) for triangles
  */
-function FootprintMesh({ vertices }: { vertices: Vertex[] }) {
-  // Memoize geometry creation to avoid recalculating on every render
-  const geometry = useMemo(() => createTriangulatedGeometry(vertices), [vertices]);
-
-  if (!geometry) return null;
+function FootprintPolygon({ triangles }: { triangles: Float32Array }) {
+  const geometry = useMemo(() => {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(triangles, 3));
+    g.computeVertexNormals();
+    return g;
+  }, [triangles]);
 
   return (
     <mesh geometry={geometry}>
-      <meshBasicMaterial
-        color="#ff0000"
+      <meshStandardMaterial
+        color="#ff6600"
         transparent
-        opacity={0.5}
+        opacity={0.4}
         side={THREE.DoubleSide}
       />
     </mesh>
+  );
+}
+
+/**
+ * FootprintBoundary Component
+ * 
+ * Renders a wireframe line for the footprint boundary.
+ * @param boundary - Float32Array of interleaved XYZ coordinates (in meters) for boundary vertices
+ */
+function FootprintBoundary({ boundary }: { boundary: Float32Array }) {
+  const geometry = useMemo(() => {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(boundary, 3));
+    return g;
+  }, [boundary]);
+
+  return (
+    <lineLoop geometry={geometry}>
+      <lineBasicMaterial color="#ff6600" linewidth={2} />
+    </lineLoop>
   );
 }
 
@@ -118,7 +143,26 @@ export default function Home() {
       setLoading(true);
       setError(null);
       setErrorDetails(null);
-      const response = await fetch('/api/footprint');
+      // Use query parameters from the requirements
+      const utc = '2019-09-21T21:01:12.885Z';
+      const kernelSetId = 35;
+      const shape = 'DSK';
+      const sr = 'RECTANGULAR';
+      const hh = 0.6;
+      const hv = 0.6;
+      const spe = 2;
+      
+      const params = new URLSearchParams({
+        utc,
+        kernelSetId: String(kernelSetId),
+        shape,
+        sr,
+        hh: String(hh),
+        hv: String(hv),
+        spe: String(spe),
+      });
+      
+      const response = await fetch(`/api/footprint?${params.toString()}`);
       
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({ 
@@ -155,8 +199,13 @@ export default function Home() {
         <pointLight position={[10, 10, 10]} intensity={1} />
         <directionalLight position={[5, 5, 5]} intensity={0.5} />
         <BennuModel />
-        {footprintData && footprintData.vertices.length > 0 && (
-          <FootprintMesh vertices={footprintData.vertices} />
+        {footprintData && footprintData.trianglesMeters.length > 0 && (
+          <>
+            <FootprintPolygon triangles={new Float32Array(footprintData.trianglesMeters)} />
+            {footprintData.boundaryMeters.length > 0 && (
+              <FootprintBoundary boundary={new Float32Array(footprintData.boundaryMeters)} />
+            )}
+          </>
         )}
         <OrbitControls enableDamping dampingFactor={0.05} />
       </Canvas>
@@ -301,7 +350,8 @@ export default function Home() {
           color: 'white',
           borderRadius: '4px',
         }}>
-          Boundary: {footprintData.boundaryMeters.toFixed(2)} m
+          <div>Boundary Points: {footprintData.count.boundary}</div>
+          <div>Triangles: {footprintData.count.triangles}</div>
         </div>
       )}
     </div>
